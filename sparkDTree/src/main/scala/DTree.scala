@@ -1,3 +1,11 @@
+/*
+Including multiple weather station (Sort by Date grouped by station)
+Using different time lags
+Calculating different model evaluation metrics
+Parameter tuning using k-fold and  gird search.
+Definition of a base-line model
+For random forest use more than two states for rainfall condition by changing bucketizer parms.
+ */
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.apache.spark.sql.functions
@@ -6,6 +14,7 @@ import org.apache.spark.sql.expressions.Window
 import org.apache.spark.ml.feature.Bucketizer
 import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.ml.classification.DecisionTreeClassifier
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 
 import scala.util.Random
 object DTree {
@@ -15,11 +24,13 @@ object DTree {
       .master("local[*]")
       .getOrCreate()
 
+    spark.sparkContext.setLogLevel("WARN")
+
     import spark.implicits._
 
     val dtInstance = new DTree(spark)
     val weatherDataFrame = dtInstance.createDataFrame()
-
+    //weatherDataFrame.show(5,0)
 
     // Lagging the weatherdataFrame...
     val window = Window.orderBy("Date")
@@ -41,7 +52,9 @@ object DTree {
 
 
     //laggedDataFrame.show()
-    val Array(traininData, testData) = laggedDataFrame.randomSplit(Array(0.7,0.3))
+    val Array(trainData, testData) = laggedDataFrame.randomSplit(Array(0.7,0.3))
+    trainData.cache()
+    testData.cache()
 
     // Transforming continious label (rainfall data) to bucketed labels
     val bucketizer = new Bucketizer()
@@ -49,6 +62,10 @@ object DTree {
       .setOutputCol("WetDry")
       .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
     //.transform()
+
+    val countWet = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
+
+    countWet.show()
 
     //val stringIndexer =  ???
 
@@ -60,7 +77,7 @@ object DTree {
 
     //for (elm<-inputCols) println(elm)
 
-    //Assembling input variables
+    // Assembling input variables
     val inputVector = new VectorAssembler()
       .setInputCols(inputCols)
       .setOutputCol("inputVector")
@@ -75,16 +92,34 @@ object DTree {
       .setPredictionCol("Prediction")
     //.fit()
 
-
+    // Creating pipeline model and setting stages:
     val pipeline = new Pipeline()
       .setStages(Array(bucketizer, inputVector, decisionTree))
 
-    val pipelineModel = pipeline.fit(laggedDataFrame)
+    // Fitting the pipeline model on trainData
+    val pipelineModel = pipeline.fit(trainData)
 
-    val predictions = pipelineModel.transform(laggedDataFrame)
+    // Model predictions for training and test data
+    val trainDataPredictions = pipelineModel.transform(trainData)
+    val testDataPredictions = pipelineModel.transform(testData)
 
-    predictions.select("WetDry", "Prediction").show
 
+    // Calculating model evaluation metrics on training and test data
+    val metricEvaluator = new MulticlassClassificationEvaluator()
+      .setLabelCol("WetDry")
+      .setPredictionCol("Prediction")
+      .setMetricName("f1")
+
+    val trainEvalMetric = metricEvaluator.evaluate(trainDataPredictions)
+    val testEvalMetric = metricEvaluator.evaluate(testDataPredictions)
+
+    println(s"Evaluation metric for training data is ${trainEvalMetric} " +
+      s"and for test data is ${testEvalMetric}")
+
+
+
+    trainData.unpersist()
+    testData.unpersist()
 
     println("End of the cat and mouse!")
     spark.close()
@@ -135,8 +170,6 @@ class DTree(private val spark: SparkSession) {
     weatherData
 
   }
-
-
 
 }
 
