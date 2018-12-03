@@ -34,6 +34,7 @@ object DTree {
 
     // Lagging the weatherdataFrame...
     val window = Window.orderBy("Date")
+      .partitionBy("STN")
     val laggedDataFrame = weatherDataFrame
       .withColumn("LagDate", functions.lag($"Date", 1).over(window))
       .withColumn("LagDDVEC", functions.lag("DDVEC", 1).over(window))
@@ -49,9 +50,12 @@ object DTree {
       .withColumn("LagEV24", functions.lag("EV24", 1).over(window))
       .withColumn("LagRH", functions.lag("RH", 1).over(window))
       .na.drop()  //Values to assemble cannot be null!
+      // You may drop redundant columns for saving memory
+      .select("LagDate", "LagDDVEC", "LagFHVEC", "LagFG",
+       "LagTG", "LagSQ", "LagSP", "LagQ", "LagPG", "LagNG", "LagUG", "LagEV24",
+       "LagRH", "RH", "Date", "STN")
 
-
-    //laggedDataFrame.show()
+    laggedDataFrame.show(10,0)
     val Array(trainData, testData) = laggedDataFrame.randomSplit(Array(0.7,0.3))
     trainData.cache()
     testData.cache()
@@ -66,8 +70,6 @@ object DTree {
     val countWet = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
 
     countWet.show()
-
-    //val stringIndexer =  ???
 
 
     // Preparing input vector
@@ -130,7 +132,7 @@ class DTree(private val spark: SparkSession) {
 
   import spark.implicits._
 
-  def createDataFrame(path: String="/home/mt/IdeaProjects/Data/KNMI_20181104.txt"): Dataset[Row] = {
+  def createDataFrame(path: String="/home/mansour/IdeaProjects/predictive_ML/Data/KNMI_20181202_All_Data.txt"): Dataset[Row] = {
 
     val colNames = Seq(
       "STN", "Date","DDVEC", "FHVEC", "FG",
@@ -144,7 +146,7 @@ class DTree(private val spark: SparkSession) {
     )
 
     val dailyCols = Seq(
-      "Date", "DDVEC", "FHVEC", "FG", "TG", "SQ",
+      "STN", "Date", "DDVEC", "FHVEC", "FG", "TG", "SQ",
       "SP", "Q", "PG", "NG", "UG", "EV24", "RH"
     )
 
