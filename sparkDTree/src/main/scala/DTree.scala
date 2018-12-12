@@ -6,14 +6,18 @@ Calculating different model evaluation metrics
 Parameter tuning using k-fold and  gird search.
 Definition of a base-line model
 For random forest use more than two states for rainfall condition by changing bucketizer parms.
+
+
+ParamMap is a container for ParamPairs
+Param are refered thtiugh an instantiated object!
  */
-import org.apache.spark.sql.{Dataset, Row, SparkSession, functions}
-import org.apache.spark.sql.expressions.Window
-import org.apache.spark.ml.{Pipeline, PipelineModel}
-import org.apache.spark.ml.feature.{Bucketizer, VectorAssembler}
-import org.apache.spark.ml.classification.DecisionTreeClassifier
+import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, DecisionTreeClassifier}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.feature.{Bucketizer, VectorAssembler}
 import org.apache.spark.ml.tuning.{ParamGridBuilder, TrainValidationSplit}
+import org.apache.spark.ml.{Pipeline, PipelineModel, linalg}
+import org.apache.spark.sql._
+import org.apache.spark.sql.expressions.Window
 
 import scala.util.Random
 object DTree {
@@ -23,7 +27,10 @@ object DTree {
       .master("local[*]")
       .getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
-    import spark.implicits._
+
+
+
+
 
     // Create input dataframe from data file
     val dtInstance = new DTree(spark)
@@ -54,7 +61,7 @@ object DTree {
     //for (elm<-inputCols) println(elm)
 
     // Assembling input variables
-    val inputVector = new VectorAssembler()
+    val inputAssembler = new VectorAssembler()
       .setInputCols(inputCols)
       .setOutputCol("inputVector")
     //.transform()
@@ -66,11 +73,14 @@ object DTree {
       .setFeaturesCol("inputVector")
       .setLabelCol("WetDry")
       .setPredictionCol("Prediction")
+
     //.fit()
 
     // Creating pipeline model and setting stages:
     val pipeline = new Pipeline()
-      .setStages(Array(bucketizer, inputVector, decisionTree))
+      .setStages(Array(bucketizer, inputAssembler, decisionTree))
+
+    /*
 
     // Fitting the pipeline model on trainData
     val pipelineModel = pipeline.fit(trainData)
@@ -92,13 +102,100 @@ object DTree {
     println(s"Evaluation metric for training data is ${trainEvalMetric} " +
       s"and for test data is ${testEvalMetric}")
 
-    // Tuning hyper parameters
-    val parmGrid = new ParamGridBuilder()
-      .addGrid(decisionTree.)
+   */
 
-    val tuningModel = new TrainValidationSplit()
-        .setSeed(Random.nextLong())
-        .setEstimator(pipeline)
+    // Tuning hyper parameters
+
+    // Defining a search grid
+    val parmGrid = new ParamGridBuilder()
+      .addGrid(decisionTree.impurity, Seq("gini", "entropy"))
+      .addGrid(decisionTree.maxDepth, Seq(3,5))
+      .addGrid(decisionTree.minInfoGain, Seq(0.01, 0.05))
+      .build()
+
+    // Defining a model evaluator
+    val metricEvaluator = new MulticlassClassificationEvaluator()
+      .setLabelCol("WetDry")
+      .setPredictionCol("Prediction")
+      .setMetricName("accuracy")
+
+
+    val modelTuner = new TrainValidationSplit()
+      .setSeed(Random.nextLong())
+      .setEstimator(pipeline)
+      .setEvaluator(metricEvaluator)
+      .setEstimatorParamMaps(parmGrid)
+      .setCollectSubModels(false)
+      .setTrainRatio(0.9)
+
+
+    val tunedModel = modelTuner.fit(trainData)
+
+    // Getting the best model and its parameters
+    val bestDtreeModel:DecisionTreeClassificationModel = tunedModel
+      .bestModel
+      .asInstanceOf[PipelineModel]
+      .stages.last
+      .asInstanceOf[DecisionTreeClassificationModel]
+
+
+    // Most influential features
+    val topFeatures:linalg.Vector = bestDtreeModel
+      .featureImportances
+
+    import spark.implicits._
+    val df:Array[(String,Double)] = inputCols.zip(topFeatures.toArray)
+    df.foreach(println)
+
+
+
+    //topFeatures.asInstanceOf[linalg.SparseVector].indices.foreach(println)
+
+
+    // Printing best model's (hyper-) parameters
+    val parmMap = bestDtreeModel.extractParamMap()
+      .toSeq.map{paramPair=>
+      (paramPair.param.toString().split("__").apply(1), paramPair.value)}
+      .foreach(println(_))
+
+    // Getting the best's fitted parameters
+
+
+
+    // Best model's evaluation metric
+
+
+
+
+
+    val res:linalg.Vector = bestDtreeModel.featureImportances
+
+    val struc = bestDtreeModel.toDebugString
+
+    val numfeeature = bestDtreeModel.numFeatures
+
+
+    println(numfeeature)
+
+
+    println(res)
+
+    println(struc)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -173,11 +270,12 @@ class DTree(private val spark: SparkSession) {
       .na.drop() // feature vales cannot be null!
       // You may drop redundant columns for saving memory
       .select("Date", "STN", "LagDate", "LagDDVEC", "LagFHVEC", "LagFG",
-        "LagTG", "LagSQ", "LagSP", "LagQ", "LagPG", "LagNG", "LagUG", "LagEV24",
-        "LagRH", "RH")
+      "LagTG", "LagSQ", "LagSP", "LagQ", "LagPG", "LagNG", "LagUG", "LagEV24",
+      "LagRH", "RH")
     laggedDataFrame
 
   }
+
 
   def dTree(): Unit = {
     /* save model, show metrics
