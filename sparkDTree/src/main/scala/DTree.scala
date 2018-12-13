@@ -14,6 +14,7 @@ Param are refered thtiugh an instantiated object!
 import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, DecisionTreeClassifier}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{Bucketizer, VectorAssembler}
+import org.apache.spark.ml.param.{ParamMap, ParamPair}
 import org.apache.spark.ml.tuning.{ParamGridBuilder, TrainValidationSplit}
 import org.apache.spark.ml.{Pipeline, PipelineModel, linalg}
 import org.apache.spark.sql._
@@ -28,7 +29,7 @@ object DTree {
       .getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
-
+   import spark.implicits._
 
 
 
@@ -109,8 +110,8 @@ object DTree {
     // Defining a search grid
     val parmGrid = new ParamGridBuilder()
       .addGrid(decisionTree.impurity, Seq("gini", "entropy"))
-      .addGrid(decisionTree.maxDepth, Seq(3,5))
-      .addGrid(decisionTree.minInfoGain, Seq(0.01, 0.05))
+      .addGrid(decisionTree.maxDepth, Seq(2,3)) //,5,7,10)
+      .addGrid(decisionTree.minInfoGain, Seq(0.01,0.05)) //0.06, 0.08, 0.1
       .build()
 
     // Defining a model evaluator
@@ -131,7 +132,15 @@ object DTree {
 
     val tunedModel = modelTuner.fit(trainData)
 
-    // Getting the best model and its parameters
+
+    // Printing combination of different hyper parameters and their evaluation metrics for validation data
+    val validMetricAndHyperParam = tunedModel.getEstimatorParamMaps
+      .zip(tunedModel.validationMetrics).sortBy(-_._2)
+      .foreach{case (paramMap:ParamMap, valMetric:Double) =>
+        println(s"Model accuracy is ${valMetric} for the following hyper paramers: \n ${paramMap}")}
+
+
+    // Getting the best model (DecisionTreeClassificationModel) and its parameters
     val bestDtreeModel:DecisionTreeClassificationModel = tunedModel
       .bestModel
       .asInstanceOf[PipelineModel]
@@ -139,24 +148,23 @@ object DTree {
       .asInstanceOf[DecisionTreeClassificationModel]
 
 
-    // Most influential features
+    // Most influential input features for the train deception tree model
     val topFeatures:linalg.Vector = bestDtreeModel
       .featureImportances
 
-    import spark.implicits._
-    val df:Array[(String,Double)] = inputCols.zip(topFeatures.toArray)
-    df.foreach(println)
+    val df:DataFrame = inputCols
+      .zip(topFeatures.toArray)
+      .toList.toDF("Features", "Importance")
+      .sort($"Importance".desc)
 
-
-
-    //topFeatures.asInstanceOf[linalg.SparseVector].indices.foreach(println)
-
+    df.show()
 
     // Printing best model's (hyper-) parameters
     val parmMap = bestDtreeModel.extractParamMap()
       .toSeq.map{paramPair=>
       (paramPair.param.toString().split("__").apply(1), paramPair.value)}
       .foreach(println(_))
+
 
     // Getting the best's fitted parameters
 
