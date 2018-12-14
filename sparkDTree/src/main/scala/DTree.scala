@@ -13,12 +13,13 @@ Param are refered thtiugh an instantiated object!
  */
 import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, DecisionTreeClassifier}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
-import org.apache.spark.ml.feature.{Bucketizer, VectorAssembler}
-import org.apache.spark.ml.param.{ParamMap, ParamPair}
+import org.apache.spark.ml.feature.{Bucketizer, QuantileDiscretizer, VectorAssembler}
+import org.apache.spark.ml.param.{Param, ParamMap, ParamPair}
 import org.apache.spark.ml.tuning.{ParamGridBuilder, TrainValidationSplit}
-import org.apache.spark.ml.{Pipeline, PipelineModel, linalg}
+import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage, linalg}
 import org.apache.spark.sql._
 import org.apache.spark.sql.expressions.Window
+
 import scala.util.Random
 
 
@@ -44,6 +45,15 @@ object DTree {
     trainData.cache()
     testData.cache()
 
+
+
+    /*
+    val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
+    countWetDry.show()
+
+
+
+
     // Transforming continious label (rainfall data) to bucketed labels
     val bucketizer = new Bucketizer()
       .setInputCol("RH")
@@ -51,8 +61,9 @@ object DTree {
       .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
     //.transform()
 
-    val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
-    countWetDry.show()
+
+
+
 
 
     // Assembling input vector
@@ -82,9 +93,10 @@ object DTree {
     val pipeline = new Pipeline()
       .setStages(Array(bucketizer, inputAssembler, decisionTree))
 
-
+   */
 
     dtInstance.dTree(trainData, testData)
+    dtInstance.dTreeHyperTuned(trainData, testData)
 
     /*
 
@@ -110,6 +122,8 @@ object DTree {
 
    */
 
+
+    /*
     // Tuning hyper parameters
 
     // Defining a search grid
@@ -181,7 +195,7 @@ object DTree {
 
 
 
-
+*/
 
     trainData.unpersist()
     testData.unpersist()
@@ -194,6 +208,12 @@ object DTree {
 class DTree(private val spark: SparkSession) {
 
   import spark.implicits._
+
+  /** Creates dataframe from text file containing the Netherlands weather stations.
+    *
+    * @param path Fila path containing weather data
+    * @return Dataframe containing inputs and label data
+    */
   def createDataFrame(path: String="/home/mansour/IdeaProjects/predictive_ML/Data/KNMI_20181202_All_Data.txt"): Dataset[Row] = {
     val colNames = Seq(
       "STN", "Date","DDVEC", "FHVEC", "FG",
@@ -256,22 +276,24 @@ class DTree(private val spark: SparkSession) {
 
   }
 
-
+  /** Creates a decision tree pipeline.
+    *
+    * @param inputCols column names representing input features
+    * @return a decision treee pipeline
+    */
   def createDTreePipeline(inputCols: Array[String]):Pipeline = {
-    // Discretizing continuous precipitation data into two states.
+
     val bucketizer = new Bucketizer()
       .setInputCol("RH")
       .setOutputCol("WetDry")
-      .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
+      .setSplits(Array(Double.NegativeInfinity, 0.1,5,15, Double.PositiveInfinity))
     //.transform()
 
-    //val countWetDry = bucketizer.transform(trainData).groupBy("WetDry").count()
-   // countWetDry.show()
 
-    // Collecting input column names.
-   // val inputCols = trainData.columns.filter{colName=>
-      //colName.startsWith("Lag") &&
-        //!colName.contains("Date")}
+    val quantileDiscretizer = new QuantileDiscretizer()
+      .setInputCol("RH")
+      .setOutputCol("WetDry")
+      .setNumBuckets(3)
 
     // Assembling input vector
     val inputAssembler = new VectorAssembler()
@@ -289,55 +311,35 @@ class DTree(private val spark: SparkSession) {
 
     // Creating pipeline model and setting stages:
     val pipeline = new Pipeline()
-      .setStages(Array(bucketizer, inputAssembler, decisionTree))
+      .setStages(Array(quantileDiscretizer, inputAssembler, decisionTree)) //first stage could be also a bucketizer
 
     pipeline
 
   }
 
-  /**
-    * Train and evaluates a decision tree model for predicting weather states.
+  /** Train and evaluates a decision tree model for predicting precipitation states.
     *
+    * @param trainData train dataset
+    * @param testData test dataset
     */
   def dTree(trainData:DataFrame, testData:DataFrame): Unit = {
-
-    // Discretizing continuous precipitation data into two states.
-    val bucketizer = new Bucketizer()
-      .setInputCol("RH")
-      .setOutputCol("WetDry")
-      .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
-    //.transform()
-
-    val countWetDry = bucketizer.transform(trainData).groupBy("WetDry").count()
-    countWetDry.show()
 
     // Collecting input column names.
     val inputCols = trainData.columns.filter{colName=>
       colName.startsWith("Lag") &&
         !colName.contains("Date")}
 
-    // Assembling input vector
-    val inputAssembler = new VectorAssembler()
-      .setInputCols(inputCols)
-      .setOutputCol("inputVector")
-    //.transform()
+    // Creating a decision tree pipeline
+    val pipeline = createDTreePipeline(inputCols)
 
-    // Creating a decision tree model using assembled feature Vector and label variables.
-    val decisionTree = new DecisionTreeClassifier()
-      .setSeed(Random.nextLong())
-      .setFeaturesCol("inputVector")
-      .setLabelCol("WetDry")
-      .setPredictionCol("Prediction")
-    //.fit()
+    //
+    // val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
+    // countWetDry.show()
 
-    // Creating pipeline model and setting stages:
-    val pipeline = new Pipeline()
-      .setStages(Array(bucketizer, inputAssembler, decisionTree))
-
-    // Fitting the pipeline model on trainData
+    // Fitting the pipeline on trainData to create a model
     val pipelineModel = pipeline.fit(trainData)
 
-    // Model predictions for training and test data
+    // Calculating model predictions for training and test data
     val trainDataPredictions = pipelineModel.transform(trainData)
     val testDataPredictions = pipelineModel.transform(testData)
 
@@ -354,10 +356,10 @@ class DTree(private val spark: SparkSession) {
     val evalMetricValues4TestData = evalMetricNames
       .map(metricEvaluator.setMetricName(_).evaluate(testDataPredictions))
 
-    println("Prediction evaluation metrics for train dataset are:" )
+    println("Prediction evaluation metrics for decision tree model using train dataset are:" )
     evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
     println()
-    println("Prediction evaluation metrics for test dataset are:" )
+    println("Prediction evaluation metrics for decision tree model using test dataset are:" )
     evalMetricNames.zip(evalMetricValues4TestData).foreach(println(_))
     println()
 
@@ -370,23 +372,97 @@ class DTree(private val spark: SparkSession) {
       .toList.toDF("Features", "Importance")
       .sort($"Importance".desc)
 
+    println("Sorted input features in order of their importance:")
+    df.show()
+    println("End of decision tree model prediction and evaluation \n")
+  }
+
+  /** Trains a number of decision tree models using different hyper parameters.
+    *
+    * @param trainData
+    * @param testData
+    */
+
+  def dTreeHyperTuned(trainData:DataFrame, testData:DataFrame) : Unit = {
+
+
+    // Collecting input column names.
+    val inputCols = trainData.columns.filter{colName=>
+      colName.startsWith("Lag") &&
+        !colName.contains("Date")}
+
+    val pipeline = createDTreePipeline(inputCols)
+    val decisionTree = pipeline.getStages.last.asInstanceOf[DecisionTreeClassifier]
+
+  // Defining a search grid
+  val parmGrid = new ParamGridBuilder()
+    .addGrid(decisionTree.impurity, Seq("gini", "entropy"))
+    .addGrid(decisionTree.maxDepth, Seq(1,2,3,4,5)) //,5,7,10)
+    .addGrid(decisionTree.minInfoGain, Seq(0.01,0.02,0.04,0.06,0.08,0.1)) //
+    .build()
+
+  // Defining a model evaluator
+  val metricEvaluator = new MulticlassClassificationEvaluator()
+    .setLabelCol("WetDry")
+    .setPredictionCol("Prediction")
+    .setMetricName("accuracy")
+
+
+  val modelTuner = new TrainValidationSplit()
+    .setSeed(Random.nextLong())
+    .setEstimator(pipeline)
+    .setEvaluator(metricEvaluator)
+    .setEstimatorParamMaps(parmGrid)
+    .setCollectSubModels(false)
+    .setTrainRatio(0.9)
+
+
+  val tunedModel = modelTuner.fit(trainData)
+
+
+  // Printing combination of different hyper parameters and their evaluation metrics for validation data
+  val validMetricAndHyperParam = tunedModel.getEstimatorParamMaps
+    .zip(tunedModel.validationMetrics).sortBy(-_._2)
+
+    println("Model evaluation metrics and theri corresponding hyper parameter set \n" +
+      "sorted according to their evaluation metrics:")
+    validMetricAndHyperParam.foreach{case (paramMap:ParamMap, valMetric:Double) =>
+      println(s"Model accuracy is ${valMetric} for the following hyper paramers: \n ${paramMap}")}
+
+
+  // Getting the best model (DecisionTreeClassificationModel) and its parameters
+  val bestDtreeModel:DecisionTreeClassificationModel = tunedModel
+    .bestModel
+    .asInstanceOf[PipelineModel]
+    .stages.last
+    .asInstanceOf[DecisionTreeClassificationModel]
+
+
+  // Most influential input features for the train decision tree model
+  val topFeatures:linalg.Vector = bestDtreeModel
+    .featureImportances
+
+  val df:DataFrame = inputCols
+    .zip(topFeatures.toArray)
+    .toList.toDF("Features", "Importance")
+    .sort($"Importance".desc)
+
+    println("Sorted input features in order of their importance:")
     df.show()
 
-   // val trainEvalMetric = metricEvaluator.evaluate(trainDataPredictions)
-    //val testEvalMetric = metricEvaluator.evaluate(testDataPredictions)
+  // Printing best model's (hyper-) parameters
+    println("Best model's parameter are:")
+  val parmMap = bestDtreeModel.extractParamMap()
+    .toSeq.map{paramPair=>
+    (paramPair.param.toString().split("__").apply(1), paramPair.value)}
+    .foreach(println(_))
+    println()
 
-//println(s"Evaluation metric for training data is ${trainEvalMetric} " +
- // s"and for test data is ${testEvalMetric}")
 
-
-/* save model, show metrics
-This model makes a binary prediction using the wet threshold value.
-splitRatios: Array[Double]
-wetThreshold: Double
-*/
-}
-
-def dTreeHyperTuned() : Unit = {???}
+  // Printing the best fitted DecisionTree model structure
+  println(bestDtreeModel.toDebugString)
+  println("End of hyper parameter tuning for decision tree model!")
+  }
 
 def rndForest() : Unit = {
 /*
@@ -396,8 +472,6 @@ This model uses rainfall distribution for detemining three or four level of rain
 ???}
 
 def rndForestHyperTuned() : Unit = {???}
-
-
 
 
 }
