@@ -89,6 +89,8 @@ class DTree(private val spark: SparkSession) {
       "SP", "Q", "PG", "NG", "UG", "EV24", "RH"
     )
     // Loading data from a .csv file
+    val removeMinusRH = functions.udf((RH:Double)=> if(RH>=0) RH else Double.NaN)
+
     val weatherData = spark.read
       .option("comment","#")
       .csv(path)
@@ -105,7 +107,9 @@ class DTree(private val spark: SparkSession) {
       .withColumn("NG", $"NG".cast("double"))
       .withColumn("UG", $"UG".cast("double"))
       .withColumn("EV24", $"EV24".cast("double"))
-      .withColumn("RH", $"RH".cast("double"))
+      //.withColumn("RH",  $"RH".cast("double"))
+      .withColumn("RH", removeMinusRH($"RH".cast("double")))
+
 
     // Lagging weather data and removing redundant columns
     val window = Window.orderBy("Date")
@@ -146,6 +150,7 @@ class DTree(private val spark: SparkSession) {
     // Creating a decision tree model using assembled feature Vector and label variables.
     val decisionTree = new DecisionTreeClassifier()
       .setSeed(Random.nextLong())
+      .setMinInstancesPerNode(50)
       .setFeaturesCol("inputVector")
       .setLabelCol("WetDry")
       .setPredictionCol("Prediction")
@@ -159,11 +164,11 @@ class DTree(private val spark: SparkSession) {
 
   }
 
-  def multiClassEvaluator(dataFrame:DataFrame,
+  def evaluateClassificationModel(dataFrame:DataFrame,
                           predCol:String = "Prediction",
                           labelCol:String = "WetDry",
                           modelName:String = "",
-                          dataFrameName:String = "") = {
+                          dataFrameName:String = "data") = {
 
     // Calculating model evaluation metrics on training and test data
     val metricEvaluator = new MulticlassClassificationEvaluator()
@@ -178,7 +183,7 @@ class DTree(private val spark: SparkSession) {
     val evalMetricValues4TestData = evalMetricNames
       .map(metricEvaluator.setMetricName(_).evaluate(dataFrame))
 
-    println(s"Prediction evaluation metrics for the ${modelName} model for ${} are:" )
+    println(s"Prediction evaluation metrics for ${modelName} model for ${dataFrameName} are:" )
     evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
     println()
 
@@ -199,7 +204,6 @@ class DTree(private val spark: SparkSession) {
     // Creating a decision tree pipeline
     val pipeline = createDTreePipeline(inputCols)
 
-    //
     // val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
     // countWetDry.show()
 
@@ -210,25 +214,13 @@ class DTree(private val spark: SparkSession) {
     val trainDataPredictions = pipelineModel.transform(trainData)
     val testDataPredictions = pipelineModel.transform(testData)
 
-    // Calculating model evaluation metrics on training and test data
-    val metricEvaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("WetDry")
-      .setPredictionCol("Prediction")
-      //.setMetricName("f1")
+    evaluateClassificationModel(dataFrame = trainDataPredictions,
+      modelName = "Decision Tree",
+      dataFrameName = "trainData")
 
-   val evalMetricNames = Seq("f1", "accuracy", "weightedPrecision", "weightedRecall")
-   val evalMetricValues4TrainData  = evalMetricNames
-     .map(metricEvaluator.setMetricName(_).evaluate(trainDataPredictions))
-
-    val evalMetricValues4TestData = evalMetricNames
-      .map(metricEvaluator.setMetricName(_).evaluate(testDataPredictions))
-
-    println("Prediction evaluation metrics for decision tree model using train dataset are:" )
-    evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
-    println()
-    println("Prediction evaluation metrics for decision tree model using test dataset are:" )
-    evalMetricNames.zip(evalMetricValues4TestData).foreach(println(_))
-    println()
+    evaluateClassificationModel(dataFrame = testDataPredictions,
+      modelName = "Decision Tree",
+      dataFrameName = "testData")
 
     // Most influential input features for the decision tree model
     val topFeatures:linalg.Vector = pipelineModel.stages.last
@@ -264,8 +256,9 @@ class DTree(private val spark: SparkSession) {
   // Defining a search grid
   val parmGrid = new ParamGridBuilder()
     .addGrid(decisionTree.impurity, Seq("gini", "entropy"))
-    .addGrid(decisionTree.maxDepth, Seq(1,2,3,4,5)) //,5,7,10)
-    .addGrid(decisionTree.minInfoGain, Seq(0.01,0.02,0.04,0.06,0.08,0.1)) //
+    .addGrid(decisionTree.maxDepth, Seq(1,2,3)) //,5,7,10)
+    .addGrid(decisionTree.minInfoGain, Seq(0.01,0.02,0.04,0.08)) //
+    .addGrid(decisionTree.minInstancesPerNode, Seq(20,50,100))
     .build()
 
   // Defining a model evaluator
@@ -291,11 +284,10 @@ class DTree(private val spark: SparkSession) {
   val validMetricAndHyperParam = tunedModel.getEstimatorParamMaps
     .zip(tunedModel.validationMetrics).sortBy(-_._2)
 
-    println("Model evaluation metrics and theri corresponding hyper parameter set \n" +
+    println("Model evaluation metrics and their corresponding hyper parameter set \n" +
       "sorted according to their evaluation metrics:")
     validMetricAndHyperParam.foreach{case (paramMap:ParamMap, valMetric:Double) =>
       println(s"Model accuracy is ${valMetric} for the following hyper paramers: \n ${paramMap}")}
-
 
   // Getting the best model (DecisionTreeClassificationModel) and its parameters
   val bestDtreeModel:DecisionTreeClassificationModel = tunedModel
@@ -341,7 +333,7 @@ class DTree(private val spark: SparkSession) {
     val bucketizer = new Bucketizer()
       .setInputCol("RH")
       .setOutputCol("WetDry")
-      .setSplits(Array(Double.NegativeInfinity, 0.1,5,15, Double.PositiveInfinity))
+      .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
     //.transform()
 
     val quantileDiscretizer = new QuantileDiscretizer()
@@ -356,7 +348,7 @@ class DTree(private val spark: SparkSession) {
     //.transform()
 
     val pipeline = new Pipeline()
-      .setStages(Array(quantileDiscretizer, inputAssembler))
+      .setStages(Array(quantileDiscretizer, inputAssembler)) // first stage should be either a bucketizer or quantileDiscretizer!
 
     pipeline
 
@@ -376,6 +368,7 @@ class DTree(private val spark: SparkSession) {
       .setFeaturesCol("inputVector")
       .setLabelCol("WetDry")
       .setPredictionCol("Prediction")
+      .setFeatureSubsetStrategy("sqrt")
       .setNumTrees(20)
 
     // Creating pipeline model and setting a RandomForest estimator:
@@ -402,25 +395,13 @@ class DTree(private val spark: SparkSession) {
     val trainDataPredictions = pipelineModel.transform(trainData)
     val testDataPredictions = pipelineModel.transform(testData)
 
-    // Calculating model evaluation metrics on training and test data
-    val metricEvaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("WetDry")
-      .setPredictionCol("Prediction")
-    //.setMetricName("f1")
+    evaluateClassificationModel(dataFrame = trainDataPredictions,
+      modelName = "Random Forest",
+      dataFrameName = "trainData")
 
-    val evalMetricNames = Seq("f1", "accuracy", "weightedPrecision", "weightedRecall")
-    val evalMetricValues4TrainData  = evalMetricNames
-      .map(metricEvaluator.setMetricName(_).evaluate(trainDataPredictions))
-
-    val evalMetricValues4TestData = evalMetricNames
-      .map(metricEvaluator.setMetricName(_).evaluate(testDataPredictions))
-
-    println("Prediction evaluation metrics for random forest model using train dataset are:" )
-    evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
-    println()
-    println("Prediction evaluation metrics for random forest model using test dataset are:" )
-    evalMetricNames.zip(evalMetricValues4TestData).foreach(println(_))
-    println()
+    evaluateClassificationModel(dataFrame = testDataPredictions,
+      modelName = "Random Forest",
+      dataFrameName = "testData")
 
     // Most influential input features for the random forest model
     val topFeatures:linalg.Vector = pipelineModel.stages.last
