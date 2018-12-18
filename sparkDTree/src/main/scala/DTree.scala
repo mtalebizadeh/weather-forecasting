@@ -1,4 +1,5 @@
 /*
+
 Data can be downloaded from the following website:
 http://projects.knmi.nl/klimatologie/daggegevens/selectie.cgi
 
@@ -10,8 +11,11 @@ For random forest use more than two states for rainfall condition by changing bu
 
 ParamMap is a container for ParamPairs
 Param are refered thtiugh an instantiated object!
+Key terms: Ensemble simulation, Decision Tree, Random Forest, Hyper parameter tuning, weather forecast.
+           Input sensitivty analysis, Descretie Time series analysis, Pipeline model.
+
  */
-import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, DecisionTreeClassifier, RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.feature.{Bucketizer, QuantileDiscretizer, VectorAssembler}
 import org.apache.spark.ml.param.{Param, ParamMap, ParamPair}
@@ -21,7 +25,6 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.expressions.Window
 
 import scala.util.Random
-
 
 object DTree {
   def main(args: Array[String]): Unit = {
@@ -48,12 +51,10 @@ object DTree {
     countWetDry.show()
     */
 
-    dtInstance.dTree(trainData, testData)
-    dtInstance.dTreeHyperTuned(trainData, testData)
+      dtInstance.dTree(trainData, testData)
+    //dtInstance.dTreeHyperTuned(trainData, testData)
     //dtInstance.rndForest(trainData, testData)
-
-
-
+    //dtInstance.rndForestHyperTuned(trainData, testData)
 
     trainData.unpersist()
     testData.unpersist()
@@ -110,7 +111,6 @@ class DTree(private val spark: SparkSession) {
       //.withColumn("RH",  $"RH".cast("double"))
       .withColumn("RH", removeMinusRH($"RH".cast("double")))
 
-
     // Lagging weather data and removing redundant columns
     val window = Window.orderBy("Date")
       .partitionBy("STN")
@@ -134,7 +134,70 @@ class DTree(private val spark: SparkSession) {
       .select("Date", "STN", "LagDate", "LagDDVEC", "LagFHVEC", "LagFG",
       "LagTG", "LagSQ", "LagSP", "LagQ", "LagPG", "LagNG", "LagUG", "LagEV24",
       "LagRH", "RH")
+
     laggedDataFrame
+  }
+
+  /** Assembles features and label and building a pipeline
+    *
+    * @param inputCols
+    * @return
+    */
+  def createFeatureAndLabelPipeline(inputCols: Array[String]):Pipeline = {
+
+    val bucketizer = new Bucketizer()
+      .setInputCol("RH")
+      .setOutputCol("WetDry")
+      .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
+    //.transform()
+
+    val quantileDiscretizer = new QuantileDiscretizer()
+      .setInputCol("RH")
+      .setOutputCol("WetDry")
+      .setNumBuckets(3)
+
+    // Assembling input vector
+    val inputAssembler = new VectorAssembler()
+      .setInputCols(inputCols)
+      .setOutputCol("inputVector")
+    //.transform()
+
+    val pipeline = new Pipeline()
+      .setStages(Array(quantileDiscretizer, inputAssembler)) // first stage could also be a bucketizer
+
+    pipeline
+  }
+
+  /** Calculates fouer model evaluation metrics.
+    *
+    * @param dataFrame
+    * @param predCol
+    * @param labelCol
+    * @param modelName
+    * @param dataFrameName
+    */
+  def evaluateClassificationModel(dataFrame:DataFrame,
+                                  predCol:String = "Prediction",
+                                  labelCol:String = "WetDry",
+                                  modelName:String = "",
+                                  dataFrameName:String = "data") = {
+
+    // Calculating model evaluation metrics on training and test data
+    val metricEvaluator = new MulticlassClassificationEvaluator()
+      .setLabelCol(labelCol)
+      .setPredictionCol(predCol)
+    //.setMetricName("f1")
+
+    val evalMetricNames = Seq("f1", "accuracy", "weightedPrecision", "weightedRecall")
+    val evalMetricValues4TrainData  = evalMetricNames
+      .map(metricEvaluator.setMetricName(_).evaluate(dataFrame))
+
+    val evalMetricValues4TestData = evalMetricNames
+      .map(metricEvaluator.setMetricName(_).evaluate(dataFrame))
+
+    println(s"Prediction evaluation metrics for ${modelName} model for ${dataFrameName} are:" )
+    evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
+    println()
 
   }
 
@@ -158,36 +221,11 @@ class DTree(private val spark: SparkSession) {
 
     // Creating pipeline model and setting stages:
     val pipeline = new Pipeline()
-      .setStages(Array(featureAndLabelStage, decisionTree)) //first stage could be also a bucketizer
+      .setStages(Array(featureAndLabelStage, decisionTree))
 
     pipeline
-
   }
 
-  def evaluateClassificationModel(dataFrame:DataFrame,
-                          predCol:String = "Prediction",
-                          labelCol:String = "WetDry",
-                          modelName:String = "",
-                          dataFrameName:String = "data") = {
-
-    // Calculating model evaluation metrics on training and test data
-    val metricEvaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol(labelCol)
-      .setPredictionCol(predCol)
-    //.setMetricName("f1")
-
-    val evalMetricNames = Seq("f1", "accuracy", "weightedPrecision", "weightedRecall")
-    val evalMetricValues4TrainData  = evalMetricNames
-      .map(metricEvaluator.setMetricName(_).evaluate(dataFrame))
-
-    val evalMetricValues4TestData = evalMetricNames
-      .map(metricEvaluator.setMetricName(_).evaluate(dataFrame))
-
-    println(s"Prediction evaluation metrics for ${modelName} model for ${dataFrameName} are:" )
-    evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
-    println()
-
-  }
 
   /** Train and evaluates a decision tree model for predicting precipitation states.
     *
@@ -257,7 +295,7 @@ class DTree(private val spark: SparkSession) {
   val parmGrid = new ParamGridBuilder()
     .addGrid(decisionTree.impurity, Seq("gini", "entropy"))
     .addGrid(decisionTree.maxDepth, Seq(1,2,3)) //,5,7,10)
-    .addGrid(decisionTree.minInfoGain, Seq(0.01,0.02,0.04,0.08)) //
+    .addGrid(decisionTree.minInfoGain, Seq(0.01,0.02,0.04)) //
     .addGrid(decisionTree.minInstancesPerNode, Seq(20,50,100))
     .build()
 
@@ -285,8 +323,9 @@ class DTree(private val spark: SparkSession) {
     .zip(tunedModel.validationMetrics).sortBy(-_._2)
 
     println("Model evaluation metrics and their corresponding hyper parameter set \n" +
-      "sorted according to their evaluation metrics:")
-    validMetricAndHyperParam.foreach{case (paramMap:ParamMap, valMetric:Double) =>
+      "for top 10 best models sorted in order of their evaluation metrics:")
+    validMetricAndHyperParam.take(10)
+      .foreach{case (paramMap:ParamMap, valMetric:Double) =>
       println(s"Model accuracy is ${valMetric} for the following hyper paramers: \n ${paramMap}")}
 
   // Getting the best model (DecisionTreeClassificationModel) and its parameters
@@ -323,36 +362,6 @@ class DTree(private val spark: SparkSession) {
   println("End of hyper parameter tuning for decision tree model!")
   }
 
-  /** Assembles features and label and building a pipeline
-    *
-    * @param inputCols
-    * @return
-    */
-  def createFeatureAndLabelPipeline(inputCols: Array[String]):Pipeline = {
-
-    val bucketizer = new Bucketizer()
-      .setInputCol("RH")
-      .setOutputCol("WetDry")
-      .setSplits(Array(Double.NegativeInfinity, 0.1, Double.PositiveInfinity))
-    //.transform()
-
-    val quantileDiscretizer = new QuantileDiscretizer()
-      .setInputCol("RH")
-      .setOutputCol("WetDry")
-      .setNumBuckets(3)
-
-    // Assembling input vector
-    val inputAssembler = new VectorAssembler()
-      .setInputCols(inputCols)
-      .setOutputCol("inputVector")
-    //.transform()
-
-    val pipeline = new Pipeline()
-      .setStages(Array(quantileDiscretizer, inputAssembler)) // first stage should be either a bucketizer or quantileDiscretizer!
-
-    pipeline
-
-  }
 
   /** Creates a RandomForestClassifier pipeline using default hyper parameters.
     *
@@ -368,7 +377,8 @@ class DTree(private val spark: SparkSession) {
       .setFeaturesCol("inputVector")
       .setLabelCol("WetDry")
       .setPredictionCol("Prediction")
-      .setFeatureSubsetStrategy("sqrt")
+      .setFeatureSubsetStrategy("all")
+      .setSubsamplingRate(0.75)
       .setNumTrees(20)
 
     // Creating pipeline model and setting a RandomForest estimator:
@@ -417,23 +427,90 @@ class DTree(private val spark: SparkSession) {
     println("End of random forest model prediction and evaluation \n")
   }
 
-def rndForestHyperTuned() : Unit = {
-  /* hyper parameters to be used in hyper-tunning
-setFeatureSubsetStrategy....
-setImpurity...
-setMaxDepth
-setMaxInfoGain
-setMinInstancePerNode
-setNumTrees
-setSubsamplingRate
-*/
+  /** Fits a random forest model and tunes hyper parameters.
+    *
+    * @param trainData
+    * @param testData
+    */
 
+  def rndForestHyperTuned(trainData: DataFrame, testData: DataFrame) : Unit = {
 
+  // Collecting input column names.
+  val inputCols = trainData.columns.filter{colName=>
+    colName.startsWith("Lag") &&
+      !colName.contains("Date")}
 
+  val pipeline = createRndForestPipeline(inputCols)
+  val rndForest = pipeline.getStages.last.asInstanceOf[RandomForestClassifier]
 
+  // Defining a search grid
+  val parmGrid = new ParamGridBuilder()
+    .addGrid(rndForest.impurity, Seq("gini", "entropy"))
+    .addGrid(rndForest.maxDepth, Seq(2,3))
+    .addGrid(rndForest.minInfoGain, Seq(0.001, 0.005, 0.01, 0.02))
+    .addGrid(rndForest.minInstancesPerNode, Seq(20,50,100))
+    .addGrid(rndForest.numTrees, Seq(20,50))
+    .build()
 
-  ???}
+  // Defining a model evaluator
+  val metricEvaluator = new MulticlassClassificationEvaluator()
+    .setLabelCol("WetDry")
+    .setPredictionCol("Prediction")
+    .setMetricName("accuracy")
 
+  val modelTuner = new TrainValidationSplit()
+    .setSeed(Random.nextLong())
+    .setEstimator(pipeline)
+    .setEvaluator(metricEvaluator)
+    .setEstimatorParamMaps(parmGrid)
+    .setCollectSubModels(false)
+    .setTrainRatio(0.85)
+
+  // Training modelTuner
+  val tunedModel = modelTuner.fit(trainData)
+
+  // Printing combination of different hyper parameters and their evaluation metrics for validation data
+  val validMetricAndHyperParam = tunedModel.getEstimatorParamMaps
+    .zip(tunedModel.validationMetrics).sortBy(-_._2)
+
+  println("Model evaluation metrics and their corresponding hyper parameter set \n" +
+    "for top 10 best models sorted in order of their evaluation metrics:")
+  validMetricAndHyperParam.take(10)
+    .foreach{case (paramMap:ParamMap, valMetric:Double) =>
+    println(s"Model accuracy is ${valMetric} for the following hyper paramers: \n ${paramMap}")}
+
+  // Getting the best model (RandomForestClassificationModel) and its parameters
+  val bestDtreeModel:RandomForestClassificationModel = tunedModel
+    .bestModel
+    .asInstanceOf[PipelineModel]
+    .stages.last
+    .asInstanceOf[RandomForestClassificationModel]
+
+  // Most influential input features for the train decision tree model
+  val topFeatures:linalg.Vector = bestDtreeModel
+    .featureImportances
+
+  val df:DataFrame = inputCols
+    .zip(topFeatures.toArray)
+    .toList.toDF("Features", "Importance")
+    .sort($"Importance".desc)
+
+  println("Sorted input features in order of their importance:")
+  df.show()
+
+  // Printing best model's (hyper-) parameters
+  println("Best model's parameter are:")
+  val parmMap = bestDtreeModel.extractParamMap()
+    .toSeq.map{paramPair=>
+    (paramPair.param.toString().split("__").apply(1), paramPair.value)}
+    .foreach(println(_))
+  println()
+
+  // Printing the best fitted DecisionTree model structure
+  println(bestDtreeModel.toDebugString)
+  println("End of hyper parameter tuning for decision random forest classification model!")
+
+  }
 
 }
 
