@@ -23,7 +23,6 @@ import org.apache.spark.ml.tuning.{ParamGridBuilder, TrainValidationSplit}
 import org.apache.spark.ml.{Pipeline, PipelineModel, PipelineStage, linalg}
 import org.apache.spark.sql._
 import org.apache.spark.sql.expressions.Window
-
 import scala.util.Random
 
 object DTree {
@@ -45,12 +44,10 @@ object DTree {
     val Array(trainData, testData) = laggedDataFrame.randomSplit(Array(0.7,0.3))
     trainData.cache()
     testData.cache()
-
     /*
     val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
     countWetDry.show()
     */
-
       dtInstance.dTree(trainData, testData)
     //dtInstance.dTreeHyperTuned(trainData, testData)
     //dtInstance.rndForest(trainData, testData)
@@ -58,16 +55,13 @@ object DTree {
 
     trainData.unpersist()
     testData.unpersist()
-
-    println("End of the cat and mouse!")
+    println("End of the analysis!")
     spark.close()
-
   }
 }
 class DTree(private val spark: SparkSession) {
 
   import spark.implicits._
-
   /** Creates dataframe from text file containing the Netherlands weather stations.
     *
     * @param path Fila path containing weather data
@@ -91,7 +85,6 @@ class DTree(private val spark: SparkSession) {
     )
     // Loading data from a .csv file
     val removeMinusRH = functions.udf((RH:Double)=> if(RH>=0) RH else Double.NaN)
-
     val weatherData = spark.read
       .option("comment","#")
       .csv(path)
@@ -198,7 +191,6 @@ class DTree(private val spark: SparkSession) {
     println(s"Prediction evaluation metrics for ${modelName} model for ${dataFrameName} are:" )
     evalMetricNames.zip(evalMetricValues4TrainData).foreach(println(_))
     println()
-
   }
 
   /** Creates a decision tree pipeline.
@@ -218,7 +210,6 @@ class DTree(private val spark: SparkSession) {
       .setLabelCol("WetDry")
       .setPredictionCol("Prediction")
     //.fit()
-
     // Creating pipeline model and setting stages:
     val pipeline = new Pipeline()
       .setStages(Array(featureAndLabelStage, decisionTree))
@@ -241,9 +232,6 @@ class DTree(private val spark: SparkSession) {
 
     // Creating a decision tree pipeline
     val pipeline = createDTreePipeline(inputCols)
-
-    // val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
-    // countWetDry.show()
 
     // Fitting the pipeline on trainData to create a model
     val pipelineModel = pipeline.fit(trainData)
@@ -305,7 +293,6 @@ class DTree(private val spark: SparkSession) {
     .setPredictionCol("Prediction")
     .setMetricName("accuracy")
 
-
   val modelTuner = new TrainValidationSplit()
     .setSeed(Random.nextLong())
     .setEstimator(pipeline)
@@ -314,9 +301,7 @@ class DTree(private val spark: SparkSession) {
     .setCollectSubModels(false)
     .setTrainRatio(0.9)
 
-
   val tunedModel = modelTuner.fit(trainData)
-
 
   // Printing combination of different hyper parameters and their evaluation metrics for validation data
   val validMetricAndHyperParam = tunedModel.getEstimatorParamMaps
@@ -334,7 +319,6 @@ class DTree(private val spark: SparkSession) {
     .asInstanceOf[PipelineModel]
     .stages.last
     .asInstanceOf[DecisionTreeClassificationModel]
-
 
   // Most influential input features for the train decision tree model
   val topFeatures:linalg.Vector = bestDtreeModel
@@ -356,12 +340,10 @@ class DTree(private val spark: SparkSession) {
     .foreach(println(_))
     println()
 
-
   // Printing the best fitted DecisionTree model structure
   println(bestDtreeModel.toDebugString)
   println("End of hyper parameter tuning for decision tree model!")
   }
-
 
   /** Creates a RandomForestClassifier pipeline using default hyper parameters.
     *
@@ -386,7 +368,6 @@ class DTree(private val spark: SparkSession) {
       .setStages(Array(featureAndLabelStage, randForest)) //first stage could be also a bucketizer
 
     pipeline
-
   }
 
   def rndForest(trainData:DataFrame, testData:DataFrame) : Unit = {
@@ -511,6 +492,14 @@ class DTree(private val spark: SparkSession) {
   println("End of hyper parameter tuning for decision random forest classification model!")
 
   }
+
+  def gbTree()
+
+
+
+
+
+
 
 }
 
