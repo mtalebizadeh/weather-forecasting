@@ -1,19 +1,5 @@
 /*
 
-Data can be downloaded from the following website:
-http://projects.knmi.nl/klimatologie/daggegevens/selectie.cgi
-
-Calculating different model evaluation metrics
-Parameter tuning using k-fold and  gird search.
-Definition of a base-line model
-For random forest use more than two states for rainfall condition by changing bucketizer parms.
-
-
-ParamMap is a container for ParamPairs
-Param are refered thtiugh an instantiated object!
-Key terms: Ensemble simulation, Decision Tree, Random Forest, Hyper parameter tuning, weather forecast.
-           Input sensitivty analysis, Descretie Time series analysis, Pipeline model.
-
  */
 import org.apache.spark.ml.classification._
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -48,10 +34,14 @@ object DTree {
     val countWetDry = bucketizer.transform(laggedDataFrame).groupBy("WetDry").count()
     countWetDry.show()
     */
-      dtInstance.dTree(trainData, testData)
-    //dtInstance.dTreeHyperTuned(trainData, testData)
-    //dtInstance.rndForest(trainData, testData)
-    //dtInstance.rndForestHyperTuned(trainData, testData)
+
+    // Uncomment for running more methods
+
+     dtInstance.dTree(trainData, testData, 3)
+    //dtInstance.dTreeHyperTuned(trainData, testData, 3)
+    //dtInstance.rndForest(trainData, testData, 3)
+    //dtInstance.rndForestHyperTuned(trainData, testData, 3)
+    //dtInstance.gbTree(trainData, testData, 2)
 
     trainData.unpersist()
     testData.unpersist()
@@ -136,7 +126,7 @@ class DTree(private val spark: SparkSession) {
     * @param inputCols
     * @return
     */
-  def createFeatureAndLabelPipeline(inputCols: Array[String]):Pipeline = {
+  def createFeatureAndLabelPipeline(inputCols: Array[String], numStates: Int):Pipeline = {
 
     val bucketizer = new Bucketizer()
       .setInputCol("RH")
@@ -147,7 +137,7 @@ class DTree(private val spark: SparkSession) {
     val quantileDiscretizer = new QuantileDiscretizer()
       .setInputCol("RH")
       .setOutputCol("WetDry")
-      .setNumBuckets(3)
+      .setNumBuckets(numStates)
 
     // Assembling input vector
     val inputAssembler = new VectorAssembler()
@@ -198,9 +188,9 @@ class DTree(private val spark: SparkSession) {
     * @param inputCols column names representing input features
     * @return a decision treee pipeline
     */
-  def createDTreePipeline(inputCols: Array[String]):Pipeline = {
+  def createDTreePipeline(inputCols: Array[String], numStates: Int):Pipeline = {
 
-    val featureAndLabelStage = createFeatureAndLabelPipeline(inputCols)
+    val featureAndLabelStage = createFeatureAndLabelPipeline(inputCols, numStates)
 
     // Creating a decision tree model using assembled feature Vector and label variables.
     val decisionTree = new DecisionTreeClassifier()
@@ -223,7 +213,7 @@ class DTree(private val spark: SparkSession) {
     * @param trainData train dataset
     * @param testData test dataset
     */
-  def dTree(trainData:DataFrame, testData:DataFrame): Unit = {
+  def dTree(trainData:DataFrame, testData:DataFrame, numStates: Int = 3): Unit = {
 
     // Collecting input column names.
     val inputCols = trainData.columns.filter{colName=>
@@ -231,7 +221,7 @@ class DTree(private val spark: SparkSession) {
         !colName.contains("Date")}
 
     // Creating a decision tree pipeline
-    val pipeline = createDTreePipeline(inputCols)
+    val pipeline = createDTreePipeline(inputCols, numStates)
 
     // Fitting the pipeline on trainData to create a model
     val pipelineModel = pipeline.fit(trainData)
@@ -268,7 +258,7 @@ class DTree(private val spark: SparkSession) {
     * @param testData
     */
 
-  def dTreeHyperTuned(trainData:DataFrame, testData:DataFrame) : Unit = {
+  def dTreeHyperTuned(trainData:DataFrame, testData:DataFrame, numStates: Int = 3) : Unit = {
 
 
     // Collecting input column names.
@@ -276,7 +266,7 @@ class DTree(private val spark: SparkSession) {
       colName.startsWith("Lag") &&
         !colName.contains("Date")}
 
-    val pipeline = createDTreePipeline(inputCols)
+    val pipeline = createDTreePipeline(inputCols, numStates)
     val decisionTree = pipeline.getStages.last.asInstanceOf[DecisionTreeClassifier]
 
   // Defining a search grid
@@ -350,9 +340,9 @@ class DTree(private val spark: SparkSession) {
     * @param inputCols
     * @return
     */
-  def createRndForestPipeline(inputCols: Array[String]):Pipeline = {
+  def createRndForestPipeline(inputCols: Array[String], numState: Int):Pipeline = {
 
-    val featureAndLabelStage = createFeatureAndLabelPipeline(inputCols)
+    val featureAndLabelStage = createFeatureAndLabelPipeline(inputCols,numState)
 
     val randForest = new RandomForestClassifier()
       .setSeed(Random.nextLong())
@@ -370,14 +360,14 @@ class DTree(private val spark: SparkSession) {
     pipeline
   }
 
-  def rndForest(trainData:DataFrame, testData:DataFrame) : Unit = {
+  def rndForest(trainData:DataFrame, testData:DataFrame, numState: Int = 3) : Unit = {
     // Collecting input column names.
     val inputCols = trainData.columns.filter{colName=>
       colName.startsWith("Lag") &&
         !colName.contains("Date")}
 
     // Creating a random forest pipeline
-    val pipeline = createRndForestPipeline(inputCols)
+    val pipeline = createRndForestPipeline(inputCols, numState)
 
     // Fitting the pipeline on trainData to create a model
     val pipelineModel = pipeline.fit(trainData)
@@ -414,14 +404,14 @@ class DTree(private val spark: SparkSession) {
     * @param testData
     */
 
-  def rndForestHyperTuned(trainData: DataFrame, testData: DataFrame) : Unit = {
+  def rndForestHyperTuned(trainData: DataFrame, testData: DataFrame, numState: Int = 3) : Unit = {
 
   // Collecting input column names.
   val inputCols = trainData.columns.filter{colName=>
     colName.startsWith("Lag") &&
       !colName.contains("Date")}
 
-  val pipeline = createRndForestPipeline(inputCols)
+  val pipeline = createRndForestPipeline(inputCols, numState)
   val rndForest = pipeline.getStages.last.asInstanceOf[RandomForestClassifier]
 
   // Defining a search grid
@@ -493,13 +483,63 @@ class DTree(private val spark: SparkSession) {
 
   }
 
-  def gbTree()
+  def creategbTreePipeline(inputCols: Array[String], numState: Int):Pipeline = {
 
+    val featureAndLabelStage = createFeatureAndLabelPipeline(inputCols,numState)
+    val gbTree = new GBTClassifier()
+      .setSeed(Random.nextLong())
+      .setFeaturesCol("inputVector")
+      .setLabelCol("WetDry")
+      .setPredictionCol("Prediction")
+      .setFeatureSubsetStrategy("all")
+      .setSubsamplingRate(0.75)
+      .setMaxIter(20)
 
+    // Creating pipeline model and setting a RandomForest estimator:
+    val pipeline = new Pipeline()
+      .setStages(Array(featureAndLabelStage, gbTree)) //first stage could be also a bucketizer
 
+    pipeline
+  }
 
+  def gbTree(trainData:DataFrame, testData:DataFrame, numState: Int = 2) : Unit = {
+    require(numState == 2, "Cannot support other than two states!")
+    // Collecting input column names.
+    val inputCols = trainData.columns.filter{colName=>
+      colName.startsWith("Lag") &&
+        !colName.contains("Date")}
 
+    // Creating a random forest pipeline
+    val pipeline = creategbTreePipeline(inputCols, numState)
 
+    // Fitting the pipeline on trainData to create a model
+    val pipelineModel = pipeline.fit(trainData)
+
+    // Calculating model predictions for training and test data
+    val trainDataPredictions = pipelineModel.transform(trainData)
+    val testDataPredictions = pipelineModel.transform(testData)
+
+    evaluateClassificationModel(dataFrame = trainDataPredictions,
+      modelName = "Gradient-boosted tree",
+      dataFrameName = "trainData")
+
+    evaluateClassificationModel(dataFrame = testDataPredictions,
+      modelName = "Gradient-boosted tree",
+      dataFrameName = "testData")
+
+    // Most influential input features for the random forest model
+    val topFeatures:linalg.Vector = pipelineModel.stages.last
+      .asInstanceOf[GBTClassificationModel].featureImportances
+
+    val df:DataFrame = inputCols
+      .zip(topFeatures.toArray)
+      .toList.toDF("Features", "Importance")
+      .sort($"Importance".desc)
+
+    println("Sorted input features in order of their importance:")
+    df.show()
+    println("End of gradient-boosted tree model prediction and evaluation \n")
+  }
 
 }
 
